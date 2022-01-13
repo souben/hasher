@@ -1,6 +1,7 @@
 package hasher
 
 import (
+	"C"
 	"fmt"
 	"os"
 	"unsafe"
@@ -16,15 +17,6 @@ const (
 	KECCAK_WORDS      = 17
 	KECCAK_DIGESTSIZE = 32
 )
-
-// Need to find how to compile function-like macros
-/*
-#define KECCAK_PROCESS_BLOCK(st, block) { \
-    for (int i_ = 0; i_ < KECCAK_WORDS; i_++){ \
-        ((st))[i_] ^= ((block))[i_]; \
-    }; \
-    keccakf_2(st, KECCAK_ROUNDS); }
-*/
 
 func local_abort(msg *byte) {
 	fmt.Fprintf(os.Stderr, "%s\n", msg)
@@ -133,6 +125,7 @@ func keccakf(st [25]uint64) {
 		st[0] ^= keccakf_rndc[round]
 	}
 }
+
 func keccakf_2(st [25]uint64, rounds int) {
 	var (
 		i     int
@@ -172,7 +165,7 @@ func keccakf_2(st [25]uint64, rounds int) {
 
 type state_t [25]uint64
 
-func keccak(in *uint8, inlen uint64, md *uint8, mdlen int) {
+func Keccak(in *uint8, inlen uint64, md *uint8, mdlen int) {
 	var (
 		st    state_t
 		temp  [144]uint8
@@ -189,12 +182,13 @@ func keccak(in *uint8, inlen uint64, md *uint8, mdlen int) {
 		rsiz = uint64(200 - mdlen*2)
 	}
 	rsizw = rsiz / 8
+
 	*(*state_t)(unsafe.Pointer(&st[0])) = state_t{}
+
 	for ; inlen >= rsiz; func() *uint8 {
 		inlen -= rsiz
 		return func() *uint8 {
-			// this was tricky, can't convert pointer to uintptr directly so I did the work around below
-			in = (*uint8)(unsafe.Pointer(uintptr(rsiz) + uintptr(unsafe.Pointer(in))))
+			in = (*uint8)(unsafe.Pointer(uintptr(unsafe.Pointer(in)) + uintptr(rsiz)))
 			return in
 		}()
 	}() {
@@ -221,57 +215,11 @@ func keccak(in *uint8, inlen uint64, md *uint8, mdlen int) {
 	keccakf(([25]uint64)(st))
 	utils.MemCpy(unsafe.Pointer(md), unsafe.Pointer(&st[0]), mdlen)
 }
-func keccak_init(ctx *KECCAK_CTX) {
+func Keccak_init(ctx *KECCAK_CTX) {
 	*ctx = KECCAK_CTX{}
 }
-func keccak_update(ctx *KECCAK_CTX, in *uint8, inlen uint64) {
-	if ctx.Rest&KECCAK_FINALIZED != 0 {
-		local_abort(utils.CString("Bad keccak use"))
-	}
-	var idx uint64 = ctx.Rest
-	ctx.Rest = (ctx.Rest + inlen) % KECCAK_BLOCKLEN
-	if idx != 0 {
-		var left uint64 = KECCAK_BLOCKLEN - idx
-		utils.MemCpy(unsafe.Pointer(uintptr(unsafe.Pointer((*byte)(unsafe.Pointer(&ctx.Message[0]))))+uintptr(idx)), unsafe.Pointer(in), int(func() uint64 {
-			if inlen < left {
-				return inlen
-			}
-			return left
-		}()))
-		if inlen < left {
-			return
-		}
-		for i_ := int(0); i_ < KECCAK_WORDS; i_++ {
-			ctx.Hash[i_] ^= ctx.Message[i_]
-		}
-		keccakf_2(ctx.Hash, KECCAK_ROUNDS)
-		in = (*uint8)(unsafe.Pointer(uintptr(unsafe.Pointer(in)) + uintptr(left)))
-		inlen -= left
-	}
-	// need to fix nil pointer
-	var is_aligned bool = (((int64(uintptr(unsafe.Pointer((*byte)(unsafe.Pointer(in)))) - uintptr(nil))) & 7) == 0)
-	for inlen >= KECCAK_BLOCKLEN {
-		var aligned_message_block *uint64
-		if is_aligned {
-			aligned_message_block = (*uint64)(unsafe.Pointer(in))
-		} else {
-			utils.MemCpy(unsafe.Pointer(&ctx.Message[0]), unsafe.Pointer(in), KECCAK_BLOCKLEN)
-			aligned_message_block = &ctx.Message[0]
-		}
-		{
-			for i_ := int(0); i_ < KECCAK_WORDS; i_++ {
-				ctx.Hash[i_] ^= *(*uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(aligned_message_block)) + unsafe.Sizeof(uint64(0))*uintptr(i_)))
-			}
-			keccakf_2(ctx.Hash, KECCAK_ROUNDS)
-		}
-		in = (*uint8)(unsafe.Pointer(uintptr(unsafe.Pointer(in)) + uintptr(KECCAK_BLOCKLEN)))
-		inlen -= KECCAK_BLOCKLEN
-	}
-	if inlen != 0 {
-		utils.MemCpy(unsafe.Pointer(&ctx.Message[0]), unsafe.Pointer(in), int(inlen))
-	}
-}
-func keccak_finish(ctx *KECCAK_CTX, md *uint8) {
+
+func Keccak_finish(ctx *KECCAK_CTX, md *uint8) {
 	if (ctx.Rest & KECCAK_FINALIZED) == 0 {
 		utils.MemSet(unsafe.Pointer(uintptr(unsafe.Pointer((*byte)(unsafe.Pointer(&ctx.Message[0]))))+uintptr(ctx.Rest)), 0, int(KECCAK_BLOCKLEN-ctx.Rest))
 		*(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer((*byte)(unsafe.Pointer(&ctx.Message[0])))) + uintptr(ctx.Rest))) |= 1
